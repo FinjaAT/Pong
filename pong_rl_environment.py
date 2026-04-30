@@ -1,5 +1,4 @@
 import pygame
-
 import random
 
 pygame.init()
@@ -144,13 +143,11 @@ def handle_paddle_movement(keys, actionrightpaddle,human,actionleftpaddle,left_p
 
 class pong_environment:
     def __init__(self,**kwargs):
-        self.render=False
-        for key, value in kwargs.items():
-            self.render=value
-            if self.render:
-                print("Rendering on")
-            else:
-                print("Rendering off")
+        self.render = kwargs.get('render', False)
+        if self.render:
+            print("Rendering on")
+        else:
+            print("Rendering off")
 
         
 
