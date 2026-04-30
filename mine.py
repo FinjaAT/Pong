@@ -5,8 +5,9 @@ import deepQ_agent as ag
 import random
 
 history_len = 10
+load_model = True
 env = envi.pong_environment(render=True)
-agent = ag.my_agent(8 * history_len, 3)
+agent = ag.my_agent(8 * history_len, 3, load_model)
 
 positiondata = env.give_start_state()
 history = deque([positiondata] * history_len, maxlen=history_len)
