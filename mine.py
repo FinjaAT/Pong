@@ -8,14 +8,15 @@ import random
 # Ändern Sie diese Variable um zwischen Spielmodi zu wechseln:
 # True  -> Mensch spielt links gegen KI rechts
 # False -> KI vs. KI (Training)
-left_human = False
+left_human = True
 # ================================
+render=True
 
 def play_human_vs_ai():
     """Mensch spielt gegen die KI (Mensch links, KI rechts)"""
     history_len = 10
-    env = envi.pong_environment(render=True)
-    agent_right = ag.my_agent(8 * history_len, 3, loadmodel=False, trainme=True)
+    env = envi.pong_environment(render=render)
+    agent_right = ag.my_agent(8 * history_len, 3, loadmodel=True, trainme=False, filename="pong_right.keras")
 
     positiondata = env.give_start_state()
     history = deque([positiondata] * history_len, maxlen=history_len)
@@ -42,7 +43,7 @@ def play_human_vs_ai():
 def play_ai_vs_ai():
     """Zwei KIs spielen gegeneinander und trainieren dabei"""
     history_len = 10
-    env = envi.pong_environment(render=True)
+    env = envi.pong_environment(render=render)
     agent_left = ag.my_agent(8 * history_len, 3, loadmodel=True, trainme=True, filename="pong_left.keras")
     agent_right = ag.my_agent(8 * history_len, 3, loadmodel=True, trainme=True, filename="pong_right.keras")
 
@@ -56,12 +57,21 @@ def play_ai_vs_ai():
     print("Rechte KI speichert in: pong_right.keras")
     print("Schließe das Fenster zum Beenden\n")
 
+    train_counter = 0  # Counter für Training-Frequenz
+    reset_scores_on_epsilon_min = False
+
     while True:
         state_left = np.concatenate(history_left)
         state_right = np.concatenate(history_right)
 
         actionleftpaddle = agent_left.get_action(state_left)
         actionrightpaddle = agent_right.get_action(state_right)
+
+        if not reset_scores_on_epsilon_min and (agent_left.EPSILON <= agent_left.EPSILON_MIN or agent_right.EPSILON <= agent_right.EPSILON_MIN):
+            env.left_score = 0
+            env.right_score = 0
+            reset_scores_on_epsilon_min = True
+            print("\nEpsilon min reached. Scores have been reset.")
 
         next_positiondata, reward, rewardleft, done, running = env.one_step(
             actionrightpaddle,
@@ -81,9 +91,12 @@ def play_ai_vs_ai():
         agent_left.memory.append((state_left, actionleftpaddle, rewardleft, next_state_left, done))
         agent_right.memory.append((state_right, actionrightpaddle, reward, next_state_right, done))
 
-        # Trainiere beide Agenten
-        agent_left.train()
-        agent_right.train()
+        # Trainiere nur alle 4 Schritte
+        train_counter += 1
+        if train_counter % 4 == 0:
+            agent_left.train()
+            agent_right.train()
+            print(f"train step: {agent_left.step} epsilon: {agent_left.EPSILON} | score L:{env.left_score} R:{env.right_score}")
 
 def main():
     if left_human:

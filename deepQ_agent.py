@@ -1,18 +1,27 @@
 import numpy as np
 from collections import deque
 import random
+import os
+
+# TensorFlow Threads für bessere CPU-Nutzung setzen
+os.environ['TF_NUM_INTRAOP_THREADS'] = '16'  # Intra-Op Threads (für Operationen innerhalb eines Ops) - angepasst an 16 Threads
+os.environ['TF_NUM_INTEROP_THREADS'] = '4'  # Inter-Op Threads (für parallele Ops)
 
 import tensorflow as tf
 from tensorflow import keras
+
+# Zusätzliche Thread-Konfiguration
+tf.config.threading.set_intra_op_parallelism_threads(16)
+tf.config.threading.set_inter_op_parallelism_threads(4)
 
 class my_agent:
     def __init__(self,inp_shape, output_shape,loadmodel=False,trainme=True,filename="pong.keras"):
 
         self.GAMMA = 0.97  #parameter in deep-Q formula for importance of the future steps
         self.EPSILON = 1.0 #epsilon greedy strategy
-        self.EPSILON_MIN = 0.001
+        self.EPSILON_MIN = 0.04
         self.EPSILON_DECAY = 0.999
-        self.BATCH_SIZE = 32 #number of random sampled items from memory that are used for a training step
+        self.BATCH_SIZE = 64 #number of random sampled items from memory that are used for a training step
         self.MEMORY_SIZE = 100000 
         self.LEARNING_RATE = 0.001 #learning rate of the gradient descent algorithm (<=0.001)
         self.TRAIN_START = 100  # don't train before memory has 100 memory items
@@ -28,13 +37,21 @@ class my_agent:
             self.EPSILON_MIN=0
 
         if loadmodel:
-            self.model = tf.keras.models.load_model(self.model_filename)
-        else: 
+            try:
+                self.model = tf.keras.models.load_model(self.model_filename)
+            except (OSError, ValueError) as e:
+                print(f"Warning: could not load model '{self.model_filename}': {e}. Building a new model instead.")
+                self.model = self.build_model(inp_shape, output_shape)
+        else:
             self.model = self.build_model(inp_shape, output_shape)
 
         #Using a target model stabilitzes the training process against overoscillations or slow learning
         self.target_model = self.build_model(inp_shape, output_shape)
         self.target_model.set_weights(self.model.get_weights()) #target model starts with the same weights as trained model
+
+        # Compiled inference functions avoid predict() overhead and speed up repeated calls
+        self.predict_fn = tf.function(lambda x: self.model(x, training=False))
+        self.target_predict_fn = tf.function(lambda x: self.target_model(x, training=False))
 
         
         self.memory = deque(maxlen=self.MEMORY_SIZE) #deque automatically limits the length of the memory
@@ -54,7 +71,6 @@ class my_agent:
     def train(self):
 
         if len(self.memory)>self.TRAIN_START: #only train if memory is already large enough
-            print("train step:",self.step," epsilon:",self.EPSILON)
             # sample random choice of states and rewards from memory and convert them to numpy arrays
             minibatch = random.sample(self.memory, self.BATCH_SIZE)
             states, actions, rewards, next_states,done = [
@@ -63,7 +79,8 @@ class my_agent:
                 ] #Extrahieren der einzelnen Datenkategorien aus memory und Konvertierung in numpy array
             
             #use target model to calculate future Qvales/rewards
-            next_Q_values = self.target_model.predict(next_states,verbose=0)
+            next_states = np.asarray(next_states, dtype=np.float32)
+            next_Q_values = self.target_predict_fn(next_states).numpy()
             max_next_Q_values = np.max(next_Q_values, axis=1)
             
             #(1-done) yields 0 if done=True. If game is done, there is no useful next_states
@@ -71,6 +88,7 @@ class my_agent:
             target_Q_values = (rewards +(1-done)* self.GAMMA * max_next_Q_values) #Q-learning Formel
         
             
+            states = np.asarray(states, dtype=np.float32)
             tape=tf.GradientTape()
             with tf.GradientTape() as tape: #GradientTape ermöglicht automatisches Differenzieren und die Verfolgung der Gradienten während der Vorwärtsausführung
                 allQvalues = self.model(states, training=True)
@@ -95,7 +113,8 @@ class my_agent:
 
         if np.random.rand() <= self.EPSILON:
             return random.randrange(self.output_shape) # random move
-        q_values = self.model.predict(np.asarray(state)[np.newaxis], verbose=0)[0] #AI model prediction
+        state_tensor = tf.convert_to_tensor(np.asarray(state, dtype=np.float32)[np.newaxis])
+        q_values = self.predict_fn(state_tensor)[0].numpy()
         return np.argmax(q_values)
     
     def update_target_model_weights(self):

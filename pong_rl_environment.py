@@ -66,11 +66,12 @@ class Ball:
         self.x_vel *= -1
 
 
-def draw(win, paddles, ball, left_score, right_score):
+def draw(win, paddles, ball, left_score_text, right_score_text):
+    if win is None:
+        return
+
     win.fill(BLACK)
 
-    left_score_text = SCORE_FONT.render(f"{left_score}", 1, WHITE)
-    right_score_text = SCORE_FONT.render(f"{right_score}", 1, WHITE)
     win.blit(left_score_text, (WIDTH//4 - left_score_text.get_width()//2, 20))
     win.blit(right_score_text, (WIDTH * (3/4) -
                                 right_score_text.get_width()//2, 20))
@@ -84,7 +85,7 @@ def draw(win, paddles, ball, left_score, right_score):
         pygame.draw.rect(win, WHITE, (WIDTH//2 - 5, i, 10, HEIGHT//20))
 
     ball.draw(win)
-    pygame.display.update()
+    pygame.display.flip()
 
 
 def handle_collision(ball, left_paddle, right_paddle):
@@ -140,6 +141,61 @@ def handle_paddle_movement(keys, actionrightpaddle,human,actionleftpaddle,left_p
         right_paddle.move(up=False)
 
 
+def predict_ball_y_at_paddle(ball, paddle_x):
+    if ball.x_vel == 0:
+        return ball.y
+
+    time_to_paddle = (paddle_x - ball.x) / ball.x_vel
+    if time_to_paddle <= 0:
+        return ball.y
+
+    projected_y = ball.y + ball.y_vel * time_to_paddle
+    period = 2 * HEIGHT
+    projected_y = projected_y % period
+    if projected_y > HEIGHT:
+        projected_y = period - projected_y
+    return projected_y
+
+
+def get_action_reward(ball, paddle, action, is_right):
+    paddle_center = paddle.y + paddle.height / 2
+    if action == 0:
+        next_center = max(paddle.height / 2, paddle_center - paddle.VEL)
+    elif action == 1:
+        next_center = min(HEIGHT - paddle.height / 2, paddle_center + paddle.VEL)
+    else:
+        next_center = paddle_center
+
+    if is_right:
+        approaching = ball.x_vel > 0
+        paddle_x = paddle.x
+    else:
+        approaching = ball.x_vel < 0
+        paddle_x = paddle.x + paddle.width
+
+    if not approaching:
+        if action == 2:
+            return 0.02
+        return -0.01
+
+    target_y = predict_ball_y_at_paddle(ball, paddle_x)
+    current_dist = abs(paddle_center - target_y)
+    next_dist = abs(next_center - target_y)
+    dist_delta = current_dist - next_dist
+
+    reward = 0.0
+    if dist_delta > 0:
+        reward += 0.08 + min(dist_delta / 50.0, 0.05)
+        if action == 2 and current_dist < paddle.height * 0.1:
+            reward += 0.02
+    else:
+        reward -= 0.05
+
+    if action == 2 and current_dist < paddle.height * 0.12:
+        reward += 0.03
+
+    return reward
+
 
 class pong_environment:
     def __init__(self,**kwargs):
@@ -165,8 +221,17 @@ class pong_environment:
 
         self.left_score = 0
         self.right_score = 0
+        self.step = 0
         if self.render:
-            draw(self.win, [self.left_paddle, self.right_paddle], self.ball, self.left_score, self.right_score)
+            self.win = pygame.display.set_mode((WIDTH, HEIGHT), pygame.DOUBLEBUF | pygame.HWSURFACE)
+            pygame.display.set_caption("Pong")
+            self.left_score_surface = SCORE_FONT.render(f"{self.left_score}", 1, WHITE)
+            self.right_score_surface = SCORE_FONT.render(f"{self.right_score}", 1, WHITE)
+            draw(self.win, [self.left_paddle, self.right_paddle], self.ball, self.left_score_surface, self.right_score_surface)
+        else:
+            self.win = None
+            self.left_score_surface = None
+            self.right_score_surface = None
 
     def give_start_state(self):
         balldata = [
@@ -188,34 +253,55 @@ class pong_environment:
     def one_step(self,actionrightpaddle,human=True,actionleftpaddle=2):  
         if self.render:
             self.clock.tick(FPS)
-            draw(self.win, [self.left_paddle, self.right_paddle], self.ball, self.left_score, self.right_score)
-        for event in pygame.event.get():
+            draw(self.win, [self.left_paddle, self.right_paddle], self.ball, self.left_score_surface, self.right_score_surface)
+            events = pygame.event.get()
+        else:
+            events = []
+
+        for event in events:
             if event.type == pygame.QUIT:
-                pygame.quit()
+                if self.render:
+                    pygame.quit()
                 return None,None,None,None,False
 
         if human:
+            if not self.render:
+                raise ValueError("Human control requires render=True so keyboard input can be captured")
             keys = pygame.key.get_pressed()
         else:
             keys=[]
         handle_paddle_movement(keys,actionrightpaddle,human,actionleftpaddle, self.left_paddle, self.right_paddle)
 
+        reward = get_action_reward(self.ball, self.right_paddle, actionrightpaddle, is_right=True)
+        rewardleft = get_action_reward(self.ball, self.left_paddle, actionleftpaddle, is_right=False)
+
         self.ball.move()
-        reward=0 #reward for right paddle
-        rewardleft=0 #reward for left paddle (AI vs AI)
         rewright,rewleft=handle_collision(self.ball, self.left_paddle, self.right_paddle)
-        reward=reward+rewright
-        rewardleft=rewardleft+rewleft
+        reward += rewright
+        rewardleft += rewleft
+        
+        # Verstärke die Belohnung für Paddletreffer
+        if rewright > 0:
+            reward += 0.15
+        if rewleft > 0:
+            rewardleft += 0.15
+        
         if self.ball.x < 0:
             self.right_score += 1
             reward=+1
             rewardleft-=1
             self.ball.reset()
+            print(f"Point! Score -> Left: {self.left_score}, Right: {self.right_score}")
+            if self.render:
+                self.right_score_surface = SCORE_FONT.render(f"{self.right_score}", 1, WHITE)
         elif self.ball.x > WIDTH:
             self.left_score += 1
             reward=-1
             rewardleft+=1
             self.ball.reset()
+            print(f"Point! Score -> Left: {self.left_score}, Right: {self.right_score}")
+            if self.render:
+                self.left_score_surface = SCORE_FONT.render(f"{self.left_score}", 1, WHITE)
 
         won = False
         if self.left_score >= WINNING_SCORE:
@@ -237,6 +323,9 @@ class pong_environment:
             self.right_paddle.reset()
             self.left_score = 0
             self.right_score = 0
+            if self.render:
+                self.left_score_surface = SCORE_FONT.render(f"{self.left_score}", 1, WHITE)
+                self.right_score_surface = SCORE_FONT.render(f"{self.right_score}", 1, WHITE)
         
        
         balldata = [
@@ -252,6 +341,10 @@ class pong_environment:
         self.right_paddle.x / WIDTH,
         self.right_paddle.y / HEIGHT
         ]
+
+        self.step += 1
+        # print(f"Step {self.step} | reward={reward:+.3f} | rewardleft={rewardleft:+.3f} | score L:{self.left_score} R:{self.right_score}", flush=True)
+
         if abs(reward)==1:
             done=True
         else:
