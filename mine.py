@@ -15,7 +15,7 @@ def play_human_vs_ai():
     """Mensch spielt gegen die KI (Mensch links, KI rechts)"""
     history_len = 10
     env = envi.pong_environment(render=True)
-    agent_right = ag.my_agent(8 * history_len, 3, loadmodel=True, trainme=True)
+    agent_right = ag.my_agent(8 * history_len, 3, loadmodel=False, trainme=True)
 
     positiondata = env.give_start_state()
     history = deque([positiondata] * history_len, maxlen=history_len)
